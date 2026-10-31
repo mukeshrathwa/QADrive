@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+
+# Production Build Output
+dist/
+dist-electron/
+
+# Runtime Artifacts, Reports, Sessions & Generated Scripts
+.e2e/
+reports/
+tests/generated/
+tests/exported/
+
+# Logs & OS files
+*.log
+.DS_Store
+Thumbs.db

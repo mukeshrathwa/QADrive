@@ -1,0 +1,42 @@
+{
+  "name": "qa-drive-test-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "QA Drive — Autonomous Web, Desktop & Load Test Studio",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1 --port 4001\" \"cross-env OPEN_DESKTOP_WINDOW=true tsx watch server/index.ts\"",
+    "dev:electron": "concurrently -k \"vite\" \"wait-on tcp:5173 && tsc -p tsconfig.electron.json && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "build": "vite build",
+    "build:exe": "node scripts/build-protected-exe.mjs",
+    "test:e2e": "e2e run",
+    "test:e2e:headed": "E2E_HEADLESS=false e2e run --headed",
+    "test:e2e:record": "e2e run --no-cache",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.0",
+    "@ai-sdk/google": "^4.0.0",
+    "@ai-sdk/openai": "^4.0.0",
+    "@ai-sdk/openai-compatible": "^3.0.0",
+    "@e2e-dev/web": "^0.15.2",
+    "ai": "^7.0.0",
+    "dotenv": "^16.4.7",
+    "e2e": "^0.21.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.2"
+  }
+}
