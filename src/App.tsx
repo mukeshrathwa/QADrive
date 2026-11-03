@@ -672,6 +672,25 @@ export function App() {
             <button
               type="button"
               className="top-menu-btn"
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/logs/open-folder', { method: 'POST' });
+                  const data = await res.json();
+                  if (data?.path) {
+                    setLogs((prev) => prev + `\n[QA Drive] Opened logs directory: ${data.path}\n`);
+                  }
+                } catch {
+                  alert('Logs are located in the logs/ folder and %LOCALAPPDATA%\\QADrive\\logs\\');
+                }
+              }}
+              title="Open application logs folder in Windows Explorer"
+            >
+              📋 Logs
+            </button>
+
+            <button
+              type="button"
+              className="top-menu-btn"
               onClick={() => {
                 setTrTestStatus({ testing: false });
                 setIsSettingsOpen(true);

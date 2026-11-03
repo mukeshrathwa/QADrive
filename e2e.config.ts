@@ -152,6 +152,10 @@ export default {
           width: viewportWidth,
           height: viewportHeight,
         },
+        screencast: {
+          size: { width: 1280, height: 720 },
+          quality: 75,
+        },
         initScripts: [
           () => {
             // Keep product/external links in the active tab so multi-page e-commerce flows never lose page context

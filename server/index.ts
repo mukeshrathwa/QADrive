@@ -1,7 +1,9 @@
 import http from 'node:http';
-import { spawn, exec, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, exec, execSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   generateWordObservationReport,
@@ -48,10 +50,15 @@ import {
   type ScannedElementInfo,
 } from './site-scanner.js';
 import type { LoadTestConfig, LoadTestSummary, OrgAwsConfig } from '../src/types.js';
+import { initLogger, getActiveLogPaths } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '..');
+
+// Initialize persistent file and console logger
+const initialLogPaths = initLogger(projectRoot);
+console.log(`[QA Drive Server] Logger active. Primary log: ${initialLogPaths.primaryLogPath}`);
 
 let PORT = Number(process.env.E2E_SERVER_PORT ?? 4002);
 const UI_PORT = Number(process.env.VITE_PORT ?? 4001);
@@ -126,6 +133,83 @@ function broadcastEvent(event: string, data: unknown) {
   for (const client of sseClients) {
     client.write(payload);
   }
+}
+
+function killProcessTree(proc: ChildProcessWithoutNullStreams | null) {
+  if (!proc || !proc.pid) return;
+  const pid = proc.pid;
+  try {
+    if (process.platform === 'win32') {
+      exec(`taskkill /pid ${pid} /T /F`, () => {});
+    } else {
+      proc.kill('SIGTERM');
+      setTimeout(() => {
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
+      }, 1500);
+    }
+  } catch {
+    try {
+      proc.kill();
+    } catch {}
+  }
+}
+
+async function ensureFfmpegAvailable(rootDir: string): Promise<boolean> {
+  const localAppData =
+    process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const msPlaywrightDir = path.join(localAppData, 'ms-playwright');
+  let hasFfmpeg = false;
+
+  try {
+    if (fsSync.existsSync(msPlaywrightDir)) {
+      const items = fsSync.readdirSync(msPlaywrightDir);
+      for (const item of items) {
+        if (item.toLowerCase().startsWith('ffmpeg')) {
+          const candidate = path.join(msPlaywrightDir, item, 'ffmpeg-win64.exe');
+          if (fsSync.existsSync(candidate)) {
+            hasFfmpeg = true;
+            break;
+          }
+        }
+      }
+    }
+  } catch {}
+
+  if (!hasFfmpeg) {
+    try {
+      execSync('ffmpeg -version', { stdio: 'ignore' });
+      hasFfmpeg = true;
+    } catch {}
+  }
+
+  if (!hasFfmpeg) {
+    console.log(
+      '[QA Drive Video] Playwright ffmpeg codec not detected in cache. Attempting automatic installation...'
+    );
+    try {
+      const pwCli = path.join(
+        rootDir,
+        'node_modules',
+        'playwright-core',
+        'cli.js'
+      );
+      if (fsSync.existsSync(pwCli)) {
+        execSync(`node "${pwCli}" install ffmpeg`, {
+          cwd: rootDir,
+          stdio: 'inherit',
+          timeout: 45000,
+        });
+        hasFfmpeg = true;
+        console.log('[QA Drive Video] Playwright ffmpeg installed successfully.');
+      }
+    } catch (err) {
+      console.warn('[QA Drive Video] Could not auto-install ffmpeg:', err);
+    }
+  }
+
+  return hasFfmpeg;
 }
 
 function cleanStepLabelForReport(rawLabel: string): string {
@@ -311,6 +395,8 @@ async function buildDiagnosticsAndWordReport(
         artifactMap.set(art.id, art);
       } else if (art.kind === 'video') {
         const absVideoPath = path.join(resultsRoot, art.path);
+        // Wait briefly for ffmpeg encoder to flush and release file handles
+        await new Promise((r) => setTimeout(r, 600));
         try {
           const videoBytes = await fs.readFile(absVideoPath);
           const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -2219,6 +2305,49 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Open the logs folder in Windows File Explorer
+  if (req.method === 'POST' && parsedUrl.pathname === '/api/logs/open-folder') {
+    const { primary, fallback } = getActiveLogPaths();
+    let targetFile = primary;
+    try {
+      await fs.access(targetFile);
+    } catch {
+      targetFile = fallback;
+    }
+    const targetDir = path.dirname(targetFile);
+    try {
+      await fs.access(targetFile);
+      exec(`explorer.exe /select,"${targetFile}"`);
+    } catch {
+      exec(`explorer.exe "${targetDir}"`);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ opened: true, path: targetFile }));
+    return;
+  }
+
+  // Get raw system logs
+  if (req.method === 'GET' && parsedUrl.pathname === '/api/system-logs') {
+    const { primary, fallback } = getActiveLogPaths();
+    let content = '';
+    try {
+      if (primary) {
+        content = await fs.readFile(primary, 'utf-8');
+      }
+    } catch {
+      try {
+        if (fallback) {
+          content = await fs.readFile(fallback, 'utf-8');
+        }
+      } catch (e) {
+        content = 'No log file found or error reading log: ' + String(e);
+      }
+    }
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(content);
+    return;
+  }
+
   // Serve screenshot and video artifacts from `.e2e/results/`
   if (req.method === 'GET' && parsedUrl.pathname === '/api/artifact') {
     const relPath = parsedUrl.searchParams.get('path') ?? '';
@@ -2755,6 +2884,17 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (payload.recordVideo) {
+      const ffmpegReady = await ensureFfmpegAvailable(projectRoot);
+      if (!ffmpegReady) {
+        broadcastEvent(
+          'log',
+          `\n⚠️ [Video Notice] Playwright FFmpeg codec was not found on this machine and could not be installed automatically. To ensure test steps run smoothly without freezing the browser, video recording has been safely bypassed for this run. (Run 'npx playwright install ffmpeg' to install it).\n\n`
+        );
+        payload.recordVideo = false;
+      }
+    }
+
     const generatedDir = path.join(projectRoot, 'tests', 'generated');
     await fs.mkdir(generatedDir, { recursive: true });
 
@@ -2866,6 +3006,24 @@ const server = http.createServer(async (req, res) => {
 
     activeRunnerProcess = child;
 
+    const runnerSafetyTimeoutMs =
+      stepTimeoutMs *
+        Math.max(2, (payload.prompt || '').split('\n').filter(Boolean).length) +
+      loginWaitMs +
+      150_000;
+
+    let watchdogTimer: NodeJS.Timeout | null = setTimeout(() => {
+      if (activeRunnerProcess && activeRunnerProcess.pid === child.pid) {
+        broadcastEvent(
+          'log',
+          `\n⏱️ [Runner Watchdog] Test runner exceeded maximum safety timeout (${Math.round(
+            runnerSafetyTimeoutMs / 1000
+          )}s). Halting stalled process tree...\n`
+        );
+        killProcessTree(child);
+      }
+    }, runnerSafetyTimeoutMs);
+
     child.stdout.on('data', (chunk: Buffer) => {
       broadcastEvent('log', stripAnsi(chunk.toString()));
     });
@@ -2875,6 +3033,10 @@ const server = http.createServer(async (req, res) => {
     });
 
     child.on('close', async (code) => {
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
       activeRunnerProcess = null;
       const finalStatus = code === 0 ? 'passed' : 'failed';
       const { consoleSummary, evidencePayload } =
@@ -2940,6 +3102,10 @@ const server = http.createServer(async (req, res) => {
     });
 
     child.on('error', (err) => {
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
       activeRunnerProcess = null;
       broadcastEvent('log', `\n[Desktop Runner Error] ${stripAnsi(err.message)}\n`);
       broadcastEvent('status', { status: 'failed', exitCode: 1 });
@@ -2954,7 +3120,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && parsedUrl.pathname === '/api/stop-run') {
     if (activeRunnerProcess || activeDesktopRunInProgress || activeLoadRunInProgress) {
       if (activeRunnerProcess) {
-        activeRunnerProcess.kill();
+        killProcessTree(activeRunnerProcess);
         activeRunnerProcess = null;
       }
       if (activeDesktopRunInProgress) {

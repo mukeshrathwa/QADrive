@@ -18,5 +18,6 @@ tests/exported/
 
 # Logs & OS files
 *.log
+logs/
 .DS_Store
 Thumbs.db
