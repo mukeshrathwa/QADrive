@@ -2991,17 +2991,41 @@ const server = http.createServer(async (req, res) => {
       ? `🏢 Org AWS (${payload.orgAws.connectionType}: ${payload.orgAws.model})`
       : `🌐 Standard (${payload.provider}: ${payload.model})`;
 
+    const e2eCliScript = path.join(
+      projectRoot,
+      'node_modules',
+      'e2e',
+      'dist',
+      'cli',
+      'bin.js'
+    );
+    let runnerExecutable = process.execPath;
+    if (
+      !runnerExecutable ||
+      (!runnerExecutable.toLowerCase().endsWith('node.exe') &&
+        !runnerExecutable.toLowerCase().endsWith('node'))
+    ) {
+      runnerExecutable = 'node';
+    }
+
+    let finalArgs: string[] = [];
+    if (fsSync.existsSync(e2eCliScript)) {
+      finalArgs = [e2eCliScript, ...cliArgs.slice(1)];
+    } else {
+      runnerExecutable = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+      finalArgs = cliArgs;
+    }
+
     broadcastEvent(
       'log',
-      `[Desktop Runner] Generated ${relativeTestPath} (AI Mode: ${activeAiSummary}, Step Timeout: ${payload.stepTimeoutSeconds ?? 180}s, Ad-Blocker: ${payload.blockAds !== false ? 'ON' : 'OFF'}, Video Recording: ${payload.recordVideo ? 'ON' : 'OFF'})\n[Desktop Runner] Launching: npx ${cliArgs.join(' ')}\n\n`
+      `[Desktop Runner] Generated ${relativeTestPath} (AI Mode: ${activeAiSummary}, Step Timeout: ${payload.stepTimeoutSeconds ?? 180}s, Ad-Blocker: ${payload.blockAds !== false ? 'ON' : 'OFF'}, Video Recording: ${payload.recordVideo ? 'ON' : 'OFF'})\n[Desktop Runner] Launching: node ${path.basename(e2eCliScript)} ${cliArgs.slice(1).join(' ')}\n\n`
     );
 
-    const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
     const runStartTime = Date.now();
-    const child = spawn(npxCmd, cliArgs, {
+    const child = spawn(runnerExecutable, finalArgs, {
       cwd: projectRoot,
       env,
-      shell: true,
+      shell: false,
     });
 
     activeRunnerProcess = child;
